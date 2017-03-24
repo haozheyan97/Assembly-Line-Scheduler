@@ -326,10 +326,12 @@ void FCFS(Order orderList[MAXORDER], int orderNum, int productInfo[PRODUCTAMOUNT
 	int pointer = 0; // the next order need to be execute.
 	while(date < 60){
 		int productLine;
-		
 		// accept new order
 		while(1){
-			productLine = qulifyIn(lineState, equipState, productInfo, orderList[pointer].product, orderList[pointer].product, date);
+			while(orderList[pointer].startDate < date){
+				
+			}
+ 			productLine = qulifyIn(lineState, equipState, productInfo, orderList[pointer].product, orderList[pointer].product, date); 
 			if(productLine == 0) break; //the current order need to be product is not available now, we need to wait,
 			if(!canFinish(orderList[pointer], date)){
 				rejectList[rejectNum] = orderList[pointer].num;
