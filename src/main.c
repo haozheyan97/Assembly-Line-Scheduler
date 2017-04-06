@@ -1,787 +1,697 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-#include "output.h"
+#include<stdio.h>
+#include<string.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include <sys/wait.h>
+#define NUM_ALS 3
+#define MAX_DAY 60
+#define MAX_ORDER 200
+#define NUM_PRODUCT 5
 
-#define PRODUCTAMOUNT 5
-#define EQUIPMENTAMOUNT 8
-#define MAXORDER 200
-extern int* scheduleOutput(char* filename, int linenumber, int alg, int line[3][60], Order* order);
-
-
-
-struct AssemblyLine{
-	int ordernum;
+struct Order
+{
+    int oid;
+    int startDate;
+    int dueDate;
+    int type;
+    int quantity;
+    int remaining;
 };
 
-struct OrderList{
-	struct Order* head;
-	struct Order* tail;
+typedef struct Order Order;
+Order order[MAX_ORDER+5];
+
+
+struct Product    // A product contains two attributes: name and equipment needed.
+{
+    char name[16];
+    int equipment;
 };
-typedef struct OrderList OrderList;
 
-struct DueNode{
-	int key;
-	int dueDate;
-	struct DueNode* next;
-};
-typedef struct DueNode DueNode;
+typedef struct Product Product;
+Product product[NUM_PRODUCT+3];
 
-/*
- * It will read a block of text from a file
- * name: the name of the file
- * it will return a string with the first element set to -1 if encounter a EOF
+
+int NUM_order;
+int ALS[NUM_ALS+3][MAX_DAY+5];
+int reject_NUM;
+int rejectList[MAX_ORDER+5];
+int is_reject[MAX_ORDER+5]; // used to
+int alg_used;
+
+char* alg[]={"ALGORITHM","FCFS","EDF","SDF","ADV"};
+
+
+
+ int MAX(int x,int y)
+ {
+    return x>y?x:y;
+ }
+
+ int MIN(int x,int y)
+ {
+    return x<y?x:y;
+ }
+
+
+/* Initalizion
+ * Set all of data to 0 which means unused
  */
-char* readContent(FILE *name){
-	char static content[50];
-	char letter = fgetc(name);
-	int count=0;
-	if(letter == EOF){
-		content[0] = -1;
-		content[1] = 0;
-		return content;
-	}
-	while(letter != ',' && letter != ' ' && letter != '\n' && letter != EOF){
-		content[count] = letter;
-		letter = fgetc(name);
-		count++;
-	}
-	content[count] = 0;
-	return content;
+void init()
+{
+    NUM_order=0;
+    alg_used=0;
+    memset(ALS,0,sizeof(ALS));
+    memset(order,0,sizeof(order));
+    memset(product,0,sizeof(product));
 }
 
-/*
- * This is input module for file input.
- * fileName: the name of the file contain the input.
- * writePipe: pipe No for write to the main process.
- */
-int addBatchOrder(int count, Order* order, char *fileName){
-	char orderNum[10];
-	char startDate[10];
-	char dueDate[10];
-	char product[10];
-	char quantity[10];
-	//char buf[80];
-	FILE* name;
-	name = fopen(fileName, "r");
-	if(name == NULL){
-		printf("file open failed\n");
-		return 0;
-	}
-	while(fscanf(name, "R%s D%s D%s Product_%s %s\n", orderNum, startDate, dueDate, product, quantity) != EOF){
-		// Indicate the start of a new order.
-        //store in the order array
-        order[count].num = atoi(orderNum);
-        order[count].startDate = atoi(startDate);
-        order[count].dueDate = atoi(dueDate);
-        order[count].product = product[0];
-        order[count].quantity = atoi(quantity);
-        order[count].remainQty = atoi(quantity);
-        printf("%s %s %s %s %s\n", orderNum, startDate, dueDate, product, quantity);
-        count++;
-
-	}
-	return count;
-}
-
-/*
- * This is input module for keyboard input
- * writePipe for
- */
-int addOrder(int count, Order* order){
-    char orderNum[10];
-    char startDate[10];
-    char dueDate[10];
-    char product[10];
-    char quantity[10];
-    scanf(" R%s D%s D%s Product_%s %s", orderNum, startDate, dueDate, product, quantity);
-    order[count].num = atoi(orderNum);
-    order[count].startDate = atoi(startDate);
-    order[count].dueDate = atoi(dueDate);
-    order[count].product = product[0];
-    order[count].quantity = atoi(quantity);
-    order[count].remainQty = atoi(quantity);
-    printf("%s %s %s %s %s\n", orderNum, startDate, dueDate, product, quantity);
-    count++;
-    return count;
-}
-
-/*
- * This function is used by parent process to get input order
- * from input module and store it.
- * orderList: a link list store all order
- * readPipe: pipe for read
- * return: number of order
- */
-int storeOrder(Order* order, int readPipe){
-	int count = 0;
-	char orderNum[10];
-	char startDate[10];
-	char dueDate[10];
-	char product[20];
-	char quantity[10];
-	char buf[10];
-	while(1){
-		//check start
-		read(readPipe, buf, 3);
-		if(buf[0] != 'C' || buf[1] != 'O') break;
-
-		// read from input module
-		read(readPipe, orderNum, 10);
-		read(readPipe, startDate, 10);
-		read(readPipe, dueDate, 10);
-		read(readPipe, product, 10);
-		read(readPipe, quantity, 10);
-
-		//store in the order array
-		order[count].num = atoi(orderNum);
-		order[count].startDate = atoi(startDate);
-		order[count].dueDate = atoi(dueDate);
-		order[count].product = product[0];
-		order[count].quantity = atoi(quantity);
-		order[count].remainQty = atoi(quantity);
-		printf("%s %s %s %s %s\n", orderNum, startDate, dueDate, product, quantity);
-		count++;
-	}
-	return count;
-}
-
-/* transfor a input command to corresponding int.
- * 1: addOrder
- * 2: addBatchOrder
- * 3: runALS
- * 4: printReport
- * 5: endProgram
- * -1: wrong input
- */
-int commandChoose(char* input){
-	if(strcmp(input, "addOrder") == 0) return 1;
-	if(strcmp(input, "addBatchOrder") == 0) return 2;
-	if(strcmp(input, "runALS") == 0) return 3;
-	if(strcmp(input, "printReport") == 0) return 4;
-	if(strcmp(input, "endProgram") == 0) return 5;
-	return -1;
-}
-
-/*
- * A module to input the equipment a product need from configuration file
- * input: name of file contain the configuration info
- * It will return a 2-d array,
- * first dimension represent product
- * second dimension represent equipment
- * int[product][equipment]
- */
-void inputProductInfo(char* input, int productInfo[PRODUCTAMOUNT][EQUIPMENTAMOUNT]){
-    FILE* in = fopen(input, "r");
-	int i,k;
-	for(i=0; i<10; i++){
-		for(k=0; k<10; k++){
-			productInfo[i][k] = 0;
-		}
-	}
-	char* result;
-	int productNum = 0;
-	while(1){
-		result = readContent(in);
-		if(result[0] == -1) break;
-		if(strstr(result, "Product_") != NULL)
-			productNum = result[8] -'A';
-		else if(strstr(result, "Equipment_") != NULL){
-			char* startOfNum = strchr(result, '_');
-			startOfNum++;
-			int equipmentNum;
-			equipmentNum = atoi(startOfNum);
-			productInfo[productNum][equipmentNum] = 1;
-		}
-	}
-	return;
-}
-
-/*
- * qsort Compare function for FCFS
- * a: Order pointer
- * b: Order pointer
- * return a positive number if a start latter than b
- */
 int cmpFCFS(const void *a, const void *b){
+	Order* aa = (Order*)a;
+	Order* bb = (Order*)b;
+	return (aa->oid - bb->oid);
+}
+
+int cmpEDF(const void *a, const void *b){
+	Order* aa = (Order*)a;
+	Order* bb = (Order*)b;
+	return (aa->dueDate - bb->dueDate);
+}
+
+int cmpSDF(const void *a, const void *b){
 	Order* aa = (Order*)a;
 	Order* bb = (Order*)b;
 	return (aa->startDate - bb->startDate);
 }
 
-int cmpDYNA(const void *a, const void *b){
+int cmpADV(const void *a, const void *b){
 	Order* aa = (Order*)a;
+	int costa = aa->quantity/1000;
 	Order* bb = (Order*)b;
-	return ((aa->dueDate - aa->startDate) -(bb->dueDate - bb->startDate));
+	int costb = bb->quantity/1000;
+	return ((aa->dueDate-costa) - (bb->dueDate-costb));
 }
 
-int cmpOrder(const void *a, const void *b){
-    Order* aa = (Order*)a;
-    Order* bb = (Order*)b;
-    return (aa->num - bb->num);
-}
+/* addOrder via stdin
+ * In this function, 4 argument will be read
+  */
+void addOrder()
+{
+    getchar();
+    int oid,startDate,dueDate;
+    char pro[16];
+    int quantity;
+    scanf("R%d D%d D%d %s %d",&oid,&startDate,&dueDate,pro,&quantity);
 
-/*
- * exam whether the line and the equipment is available for the production
- * lineState: current line state
- * equipState: current equipment state
- * productInfo: product equipment relationship
- * product: the product order needed
- * return 1 if line1 is available, 2 line2, 3 line3, 0 if not
- */
-int qulifyIn(int lineState[3], int equipState[EQUIPMENTAMOUNT], int productInfo[PRODUCTAMOUNT][EQUIPMENTAMOUNT], char product, int startDate, int date){
-	int productNum = product - 'A';
-	int i;
-	if((date+1) < startDate) return 0;
-	// if the equipment product need is not available
-	for(i=0; i<EQUIPMENTAMOUNT; i++){
-		if(equipState[i] == 1 && productInfo[productNum][i] == 1) return 0;
-	}
-	// if productline i+1 is available
-	for(i=0; i<3; i++){
-		if(lineState[i] == 0)
-			return (i+1);
-	}
-	return 0;
-}
-
-
-/*
- * Method for link list, delete the head and return the key;
- */
-int deleteHead(DueNode** head){
-	if(*head == NULL) return -1;
-	int key = (*head)->key;
-	DueNode* previous = *head;
-	*head = (*head)->next;
-	free(previous);
-	return key;
-}
-
-/*
- * Add node to a appropriate position, according to their duedate.
- */
-int addNodeEDF(DueNode** head, int key, int dueDate){
-	if(*head == NULL){
-		*head = (DueNode*) malloc(sizeof(DueNode));
-		(*head)->key = key;
-		(*head)->dueDate = dueDate;
-		(*head)->next = NULL;
-	}
-	DueNode* current = *head;
-	DueNode* previous = NULL;
-	DueNode* my = (DueNode*) malloc(sizeof(DueNode));
-	my->key = key;
-	my->dueDate = dueDate;
-	my->next = NULL;
-	if((*head)->dueDate > dueDate){
-		my->next = *head;
-		*head = my;
-		return 1;
-	}
-
-	while(current != NULL){
-		if(current->dueDate > dueDate){
-			previous->next = my;
-			my->next = current;
-			return 1;
-		}
-		previous = current;
-		current = current->next;
-	}
-	current = my;
-	return 1;
-}
-
-/* test whether the time is sufficient to finish this job
- * order: the order need to be tested
- * date: current date
- * return 1 if sufficient, 0 if not
- */
-int canFinish(Order order, int date){
-	int requireDate = order.remainQty / 1000;
-	//printf("requireDate:%d date:%d duedate:%d \n", requireDate, date+1, order.dueDate);
-	if((order.dueDate - date) >= requireDate) return 1;
-	return 0;
-}
-
-/* Transmit orderlist and reject list to parent
- *
- */
-void transResult(int line[3][60], int rejectList[MAXORDER], int rejectNum, int writePipe){
-	//communicate to the parent
-	char aBuf[10];
-	char bBuf[10];
-	char cBuf[10];
-	int i;
-	for(i=0; i<60; i++){
-		sprintf(aBuf, "%d", line[0][i]);
-		sprintf(bBuf, "%d", line[1][i]);
-		sprintf(cBuf, "%d", line[2][i]);
-		write(writePipe, aBuf, 10);
-		write(writePipe, bBuf, 10);
-		write(writePipe, cBuf, 10);
-	}
-
-	char rejectBuf[10];
-	sprintf(rejectBuf, "%d", rejectNum);
-	write(writePipe, rejectBuf, 10);
-	for(i=0; i<rejectNum; i++){
-		sprintf(rejectBuf, "%d", rejectList[i]);
-		write(writePipe, rejectBuf, 10);
-	}
-	return;
-}
-
-/* receive and store result of scheduler
- * line: the shedule list
- * rejectList: rejectList, fill null with 0
- */
-void storeSchedule(int line[3][60], int rejectList[MAXORDER], int readPipe){
-	char aBuf[10];
-	char bBuf[10];
-	char cBuf[10];
-	int i;
-	for(i=0; i<60; i++){
-		read(readPipe, aBuf, 10);
-		read(readPipe, bBuf, 10);
-		read(readPipe, cBuf, 10);
-		line[0][i] = atoi(aBuf);
-		line[1][i] = atoi(bBuf);
-		line[2][i] = atoi(cBuf);
-	}
-	char reject[10];
-	int rejectNum;
-	read(readPipe, reject, 10);
-	rejectNum = atoi(reject);
-	for(i=0; i<rejectNum; i++){
-		read(readPipe, reject, 10);
-		rejectList[i] = atoi(reject);
-	}
-	for(i=rejectNum; i<MAXORDER; i++){
-		rejectList[i] = 0;
-	}
-	return;
-}
-
-/* Schedule core for FCFS
- * orderList: a list contain the order
- * orderNum: the total order Num.
- *
- */
-
-void EDF(Order orderList[MAXORDER], int orderNum, int productInfo[PRODUCTAMOUNT][EQUIPMENTAMOUNT], int writePipe){
-	int static line[3][60]; //store the order number each assembly line produce. 0 represent out of work
-	int lineState[3]; // state of a line. 0: available 1: occupied
-	int lineP[3];
-	int rejectList[MAXORDER];
-	int i, k;
-	int equipState[EQUIPMENTAMOUNT]; //state of each equipment. 0: available 1: occupied
-	int orderEDF[MAXORDER];
-	int pointer=0;
-	int date = 0; //day counter.
-	int rejectNum = 0; // Number of reject order
-	DueNode* head=NULL; // linked list store the order available in ascending of the duedate.
-	int productLine;
-
-	for(i=0; i<3; i++){
-		lineState[i] = 0;
-		lineP[i] = 0;
-	}
-	for(i=0; i<MAXORDER; i++){
-		rejectList[i] = 0;
-	}
-	for(i=0; i<3; i++){
-		for(k=0; k<60; k++){
-			line[i][k] = 0;
-		}
-	}
-	for(i=0; i<EQUIPMENTAMOUNT; i++){
-		equipState[i] = 0;
-	}
-	int key = -1;
-	qsort(orderList, orderNum, sizeof(Order), cmpFCFS); //sort the orderlist in ascending order of start date.
-	while(date < 60){
-		//add new order to EDF list
-		while(orderList[pointer].startDate <= (date+1) && pointer < orderNum){
-			addNodeEDF(&head, pointer, orderList[pointer].dueDate); //enqueue
-			pointer++;
-		}
-		// accept new order
-		while(1){
-			if(key == -1){ // if no key has been assigned
-				key = deleteHead(&head);
-				if(key == -1) break; //queue is empty, no new work can be assigned
-			}
-			while(!canFinish(orderList[key], date)){
-				//printf("==%d==%d==%d\n", orderList[key].num, rejectNum, key);
-				rejectList[rejectNum] = orderList[key].num;
-				rejectNum++;
-				key = deleteHead(&head);
-				if(key == -1) break; // if queue is empty
-			}
-
-			if(key == -1) break;
- 			productLine = qulifyIn(lineState, equipState, productInfo, orderList[key].product, orderList[key].startDate, date);
-			if(productLine == 0) break; //the current order need to be product is not available now, we need to wait,
-			else{
-				for(i=0; i<EQUIPMENTAMOUNT; i++){
-					int productNum = orderList[key].product - 'A';
-					if(productInfo[productNum][i] == 1) equipState[i] = 1;
-				}
-				lineState[productLine-1] = 1;
-				line[productLine-1][date] = orderList[key].num;
-				lineP[productLine-1] = key;
-				key = deleteHead(&head); //dequeue
-			}
-		}
-		//working
-		for(i=0; i<3; i++){
-			if(lineState[i] != 0){
-				orderList[lineP[i]].remainQty -= 1000; // reduce remain amount
-				//if finish, change line state
-				if(orderList[lineP[i]].remainQty == 0){
-					lineState[i] = 0;
-
-					//change equipmentstate
-					for(k=0; k<EQUIPMENTAMOUNT; k++){
-						int productNum = orderList[lineP[i]].product -'A';
-						if(productInfo[productNum][k] == 1) equipState[k] = 0;
-					}
-				}
-
-				else line[i][date+1] = line[i][date]; // if not finish, do the same job next day.
-			}
-		}
-		//printf("%d date: %d %d %d\n", date+1, line[0][date], line[1][date], line[2][date]);
-		date++;
-	}
-	// put all remaining job to reject list.
-	while(head != NULL){
-		int key=deleteHead(&head);
-		rejectList[rejectNum++] = orderList[key].num;
-	}
-	transResult(line, rejectList, rejectNum, writePipe);
-    return;
-}
-
-/* Schedule core for FCFS
- * orderList: a list contain the order
- * orderNum: the total order Num.
- *
- */
-void FCFS(Order orderList[MAXORDER], int orderNum, int productInfo[PRODUCTAMOUNT][EQUIPMENTAMOUNT], int writePipe){
-	int static line[3][60]; //store the order number each assembly line produce. 0 represent out of work
-	int lineP[3]; //store the pointer
-	int lineState[3]; // state of a line. 0: available 1: occupied
-	int rejectList[MAXORDER];
-	int i, k;
-
-	for(i=0; i<3; i++){
-		lineState[i] = 0;
-		lineP[i] = 0;
-	}
-
-	for(i=0; i<3; i++){
-		for(k=0; k<60; k++){
-			line[i][k] = 0;
-		}
-	}
-
-	for(i=0; i<MAXORDER; i++){
-		rejectList[i] = 0;
-	}
-
-	int equipState[EQUIPMENTAMOUNT]; //state of each equipment. 0: available 1: occupied
-	for(i=0; i<EQUIPMENTAMOUNT; i++){
-		equipState[i] = 0;
-	}
-
-	qsort(orderList, orderNum, sizeof(Order), cmpFCFS); //sort the orderlist in ascending order of start date.
-	int date = 0; //day counter.
-	int rejectNum = 0; // Number of reject order
-	int pointer = 0; // the next order need to be execute.
-	while(date < 60){
-        //printf("Day %d\n",date);
-		int productLine;
-		// accept new order
-		while(1){
-			// if the order at the beginning of the queue can't be finish, put it to the rejectlist.
-			while(!canFinish(orderList[pointer], date) && pointer < orderNum){
-				rejectList[rejectNum] = orderList[pointer].num;
-				rejectNum++;
-				pointer++;
-			}
-			// if no more order can be add to the queue
-			if(pointer >= orderNum) break;
- 			productLine = qulifyIn(lineState, equipState, productInfo, orderList[pointer].product, orderList[pointer].startDate, date);
-			if(productLine == 0) break; //the current order need to be product is not available now, we need to wait
-			for(i=0; i<EQUIPMENTAMOUNT; i++){
-				int productNum = orderList[pointer].product - 'A';
-				if(productInfo[productNum][i] == 1) equipState[i] = 1;
-			}
-			lineState[productLine-1] = 1;
-			line[productLine-1][date] = orderList[pointer].num;
-			lineP[productLine-1] = pointer;
-			pointer++;
-		}
-		//working
-		for(i=0; i<3; i++){
-			if(lineState[i] != 0){
-				orderList[lineP[i]].remainQty -= 1000; // reduce remain amount
-				//printf("==%d %d==\n", line[i][date], orderList[lineP[i]].remainQty);
-				//if finish, change line state
-				if(orderList[lineP[i]].remainQty == 0){
-					lineState[i] = 0;
-
-					//change equipmentstate
-					for(k=0; k<EQUIPMENTAMOUNT; k++){
-						int productNum = orderList[lineP[i]].product -'A';
-						if(productInfo[productNum][k] == 1) equipState[k] = 0;
-					}
-				}
-				else{
-					line[i][date+1] = line[i][date]; // if not finish, do the same job next day.
-				}
-			}
-		}
-		//printf("%d date: %d %d %d\n", date+1, line[0][date], line[1][date], line[2][date]);
-		date++;
-	}
-
-	// put all remaining job to reject list.
-	for(i=pointer; i<orderNum; i++){
-		rejectList[rejectNum++] = orderList[pointer].num;
-		pointer++;
-	}
-
-	transResult(line, rejectList, rejectNum, writePipe);
-    return;
-}
-
-/* Dynamic Schedule
- * Determined by the latest start time
- * E.g. If a task need x days to complated and the deadline is Day y.
- * The task must start on or before Day (y-x+1)
- */
-void DYNA(Order orderList[MAXORDER], int orderNum, int productInfo[PRODUCTAMOUNT][EQUIPMENTAMOUNT], int writePipe){
-	int static line[3][60]; //store the order number each assembly line produce. 0 represent out of work
-	int lineP[3]; //store the pointer
-	int lineState[3]; // state of a line. 0: available 1: occupied
-	int rejectList[MAXORDER];
-	int i, k;
-
-	for(i=0; i<3; i++){
-		lineState[i] = 0;
-		lineP[i] = 0;
-	}
-
-	for(i=0; i<3; i++){
-		for(k=0; k<60; k++){
-			line[i][k] = 0;
-		}
-	}
-
-	for(i=0; i<MAXORDER; i++){
-		rejectList[i] = 0;
-	}
-
-	int equipState[EQUIPMENTAMOUNT]; //state of each equipment. 0: available 1: occupied
-	for(i=0; i<EQUIPMENTAMOUNT; i++){
-		equipState[i] = 0;
-	}
-
-	qsort(orderList, orderNum, sizeof(Order), cmpDYNA); //sort the orderlist in ascending order of start date.
-	int date = 0; //day counter.
-	int rejectNum = 0; // Number of reject order
-	int pointer = 0; // the next order need to be execute.
-	while(date < 60){
-		int productLine;
-		// accept new order
-		while(1){
-			// if the order at the beginning of the queue can't be finish, put it to the rejectlist.
-			while(!canFinish(orderList[pointer], date) && pointer < orderNum){
-				rejectList[rejectNum] = orderList[pointer].num;
-				rejectNum++;
-				pointer++;
-			}
-			// if no more order can be add to the queue
-			if(pointer >= orderNum) break;
- 			productLine = qulifyIn(lineState, equipState, productInfo, orderList[pointer].product, orderList[pointer].startDate, date);
-			if(productLine == 0) break; //the current order need to be product is not available now, we need to wait
-			for(i=0; i<EQUIPMENTAMOUNT; i++){
-				int productNum = orderList[pointer].product - 'A';
-				if(productInfo[productNum][i] == 1) equipState[i] = 1;
-			}
-			lineState[productLine-1] = 1;
-			line[productLine-1][date] = orderList[pointer].num;
-			lineP[productLine-1] = pointer;
-			pointer++;
-		}
-		//working
-		for(i=0; i<3; i++){
-			if(lineState[i] != 0){
-				orderList[lineP[i]].remainQty -= 1000; // reduce remain amount
-				//printf("==%d %d==\n", line[i][date], orderList[lineP[i]].remainQty);
-				//if finish, change line state
-				if(orderList[lineP[i]].remainQty == 0){
-					lineState[i] = 0;
-
-					//change equipmentstate
-					for(k=0; k<EQUIPMENTAMOUNT; k++){
-						int productNum = orderList[lineP[i]].product -'A';
-						if(productInfo[productNum][k] == 1) equipState[k] = 0;
-					}
-				}
-				else{
-					line[i][date+1] = line[i][date]; // if not finish, do the same job next day.
-				}
-			}
-		}
-		//printf("%d date: %d %d %d\n", date+1, line[0][date], line[1][date], line[2][date]);
-		date++;
-	}
-
-	// put all remaining job to reject list.
-	for(i=pointer; i<orderNum; i++){
-		rejectList[rejectNum++] = orderList[pointer].num;
-		pointer++;
-	}
-
-	transResult(line, rejectList, rejectNum, writePipe);
-    return;
-}
-
-int main(){
-    printf("\n\n   ~~Welcome to ALS~~\n\n");
-    Order order[MAXORDER];
-    int productInfo[PRODUCTAMOUNT][EQUIPMENTAMOUNT];
-    char input[] = "product_configuration.txt";
-    inputProductInfo(input, productInfo);
-    int count = 0;
-    int i,j;
-    int line[3][60];
-    int rejectList[MAXORDER];
-    while(1){
-        printf("Please enter:\n>");
-        char buffer[20];
-        scanf("%19s", buffer);
-        int command = commandChoose(buffer);
-        if(command == 1){
-            count = addOrder(count, order);
-        }
-        if (command == 2) {
-            char file[20];
-            scanf(" %s", file);
-            count = addBatchOrder(count, order, file);
-        }
-        if(command == 3){
-            char scheduler[10];
-            scanf(" %s", scheduler);
-            int pid_run;
-            int fd_reject[2];
-
-            if(pipe(fd_reject) < 0){
-                printf("Pipe error\n");
-                exit(1);
-            }
-
-            pid_run = fork();   //fork a process for runALS
-
-            if ( pid_run < 0)
+    int type=0;
+    int i;
+    for(i=1;i<=NUM_PRODUCT;i++)
+        if(strcmp(pro,product[i].name)==0)
             {
-                printf("Fork Failed\n");
-                exit(1);
+                type=i;
+                break;
             }
 
-            else if ( pid_run == 0 )		//process for runALS
-            {
-                close(fd_reject[0]);
-                int pid_report, fd[2];
+    NUM_order++;
+    order[NUM_order]=(Order){oid,startDate,dueDate,type,quantity,0};
+}
 
-                if(pipe(fd) < 0){
-                    printf("Pipe pc error\n");
-                    exit(1);
-                }
-                pid_report = fork();
+/* Check the arrangement conflict with other AL
+ * 1 for conflict and 0 for not.
+*/
 
-                if ( pid_report < 0)
-                {
-                    printf("Fork Failed\n");
-                    exit(1);
-                }
-
-                else if ( pid_report == 0){	//process for output
-                    //printf("sp");
-                    close(fd[1]);
-                    int i;
-                    int line[3][60];
-                    int reject[MAXORDER];  //just store, no use.
-                    storeSchedule(line, reject, fd[0]);
-                    for(i = 0; i<60; i++){
-                        printf("DATE:%d 1:%d 2:%d 3:%d\n", i+1, line[0][i], line[1][i], line[2][i]);
-                    }
-                    close(fd[0]);
-                    exit(0);
-                }
-                else{
-                    close(fd[0]);
-                    if(strcmp(scheduler, "-FCFS") == 0){
-                        FCFS(order, count, productInfo, fd[1]);		//write line to output
-                        FCFS(order, count, productInfo, fd_reject[1]);  //wrire rejectlist and line to main process
-                    }
-                    if(strcmp(scheduler, "-EDF") == 0){
-                        EDF(order, count, productInfo, fd[1]);
-                    }
-
-                    wait(NULL);
-                    close(fd[1]);
-                    close(fd_reject[1]);
-                    exit(0);
-                }
-            }
-            wait(NULL);
-            close(fd_reject[1]);
-            storeSchedule(line, rejectList, fd_reject[0]);  //read from line and runALS for rejectlist.
-            close(fd_reject[0]);
-        }
-
-        if (command == 4) {			//printReport
-            int pid;
-            pid = fork();
-
-            if ( pid < 0)
-            {
-                printf("Fork Failed\n");
-                exit(1);
-            }
-
-            else if ( pid == 0 )
-            {
-                qsort(order, count, sizeof(Order), cmpOrder);
-                int c = 0;
-                for(i = 0; i < count; i++){
-                    for(j = 0; j < count; j++){
-                        if(order[j].num == rejectList[i]){
-                            printf("R%d D%d D%d Product_%c %d\n", order[j].num, order[j].startDate, order[j].dueDate, order[j].product, order[j].quantity);
-                            c++;
-                        }
-                    }
-                }
-                printf("%d", c);
-                exit(0);
-            }
-
-            wait(NULL);
-            exit(0);
-
-        }
-        if (command == 5) {
-            break;
-        }
-    }
+int checkConflict(int start,int end,int equipment)
+{
+    int day;
+    for(day=start;day<=end;day++)
+        if((ALS[1][day] & ALS[2][day]) || (ALS[1][day] & ALS[3][day]) || (ALS[2][day] & ALS[3][day]))return 1;
 
     return 0;
 }
 
+/* Add product Configuration inorder to make arragement of assembly line
+ * the only argument is filename
+ */
+
+void addProductConfiguration(char *filename)
+{
+    FILE *fp;
+    fp=fopen(filename,"a+");
+
+    if(fp==NULL)
+    {
+        printf("FILE DOES NOT EXIST!\n");
+        return;
+    }
+
+
+    int no=1;
+    while(no<=5 && fscanf(fp,"%s",product[no].name)!=EOF)
+    {
+        while(1){
+            char c=fgetc(fp);
+            if(c!=32){no++;break;}
+            char equ_no[16];
+            fscanf(fp,"%s",equ_no);
+
+            int last=strlen(equ_no)-1;
+            if(equ_no[last]==',')
+            {
+                int eid=equ_no[last-1]-48;
+                product[no].equipment+=(1<<(eid-1));
+            }
+            else
+            {
+                int eid=equ_no[last]-48;
+                product[no].equipment+=(1<<(eid-1));
+                fgetc(fp);
+                no++;
+                break;
+            }
+
+
+        }
+
+    }
+
+    fclose(fp);
+}
+
+
+
+/* Main function of ALS.
+ * Given an argument to descripe the algorithm used
+ * Then Ordered the orders by the algorithm and use similar decision to deivide them into different time and assembly line
+ * For some special algorithm, use another ALS.
+ */
+int runALS(int argc, char *algorithm)
+{
+    memset(is_reject,0,sizeof(is_reject));
+    memset(ALS,0,sizeof(ALS));
+
+    int alg_num=0;
+    qsort(order+1,NUM_order,sizeof(Order),cmpFCFS);
+
+
+    if(argc==0 || strcmp(algorithm, "-FCFS") ==0 )
+    {
+        alg_num=1;
+        printf("FCFS is used for ALS.\n");
+    }
+
+    else if(strcmp(algorithm, "-EDF") == 0)
+    {
+        alg_num=2;
+        printf("EDF is used for ALS.\n");
+        qsort(order+1,NUM_order,sizeof(Order),cmpEDF);
+    }
+
+    else if(strcmp(algorithm, "-SDF") == 0)
+    {
+        alg_num=3;
+        printf("SDF is used for ALS.\n");
+        qsort(order+1,NUM_order,sizeof(Order),cmpSDF);
+    }
+
+    else if(strcmp(algorithm, "-ADV") == 0)
+    {
+        alg_num=4;
+        printf("ADV is used for ALS.\n");
+        qsort(order+1,NUM_order,sizeof(Order),cmpADV);
+    }
+
+    else
+    {
+        alg_num=1;
+        printf("FCFS is used for ALS.\n");
+    }
+
+
+
+    int i;
+    for(i=1;i<=NUM_order;i++)order[i].remaining=order[i].quantity;
+
+
+
+    int now=1;
+    int ALS_day[4];
+    ALS_day[1]=ALS_day[2]=ALS_day[3]=1;
+
+    while(now<=NUM_order)
+    {
+        if(is_reject[now])continue;
+        int choose_als=0,choose_day=0;
+        int cost=order[now].remaining/1000;
+        int als;
+        for(als=1;als<=3;als++)
+            {
+                int startOrder=MAX(ALS_day[als],order[now].startDate);
+                if(startOrder + cost - 1 > order[now].dueDate)continue;
+                else
+                {
+                    int day;
+                    for(day=startOrder;day + cost - 1 <= order[now].dueDate;day++)
+                        if(!checkConflict(day,day+cost-1,order[now].type))
+                            {
+                                choose_als=als;
+                                choose_day=day;
+                                break;
+                            }
+                }
+
+                if(choose_als!=0)break;
+            }
+
+        if(choose_als==0)is_reject[now]=1;
+        else
+        {
+            int day=choose_day,t=cost;
+            while(t--)
+            {
+                ALS[choose_als][day]=now;
+                day++;
+            }
+
+            ALS_day[choose_als]=choose_day+cost;
+
+            order[now].remaining-=cost*1000;
+        }
+
+        now++;
+    }
+
+    return alg_num;
+}
+
+
+
+void addBatchOrder(char *filename)
+{
+    FILE *fp;
+    fp=fopen(filename,"r");
+    if(fp==NULL)
+    {
+        printf("FILE DOES NOT EXIST!\n");
+        return;
+    }
+
+    int oid,startDate,dueDate;
+    char pro[16];
+    int quantity;
+
+    char buffer[128];
+
+    while(!feof(fp) && fgets(buffer,128,fp))
+    {
+        if(buffer[0]<=32)break;
+        sscanf(buffer,"R%d D%d D%d %s %d",&oid,&startDate,&dueDate,pro,&quantity);
+        int type=0;
+        int i;
+        for(i=1;i<=NUM_PRODUCT;i++)
+            if(strcmp(pro,product[i].name)==0)
+            {
+                type=i;
+                break;
+            }
+
+        NUM_order++;
+        order[NUM_order]=(Order){oid,startDate,dueDate,type,quantity,0};
+    }
+
+    fclose(fp);
+}
+
+/* print schedule -- Use pipe to get data from the child process.
+ * Format output is also used.
+ */
+
+int printSchedule(int pipe_fd, int argc, char *filename)
+{
+    char buffer[1024];
+    read(pipe_fd, buffer, sizeof(buffer));
+
+    qsort(order+1,NUM_order,sizeof(Order),cmpFCFS);
+
+    int als,day;
+
+    int prev=0,j=0;
+    for(als=1;als<=NUM_ALS;als++)
+        for(day=1;day<=MAX_DAY;day++)
+        {
+            while(buffer[j]!=' ')j++;
+            buffer[j]=0;
+            ALS[als][day]=atoi(buffer+prev);
+            j++;
+            prev=j;
+        }
+
+    int alg_num = atoi(buffer+prev);
+
+    if(alg_num==2){qsort(order+1,NUM_order,sizeof(Order),cmpEDF);}
+    if(alg_num==3){qsort(order+1,NUM_order,sizeof(Order),cmpSDF);}
+    if(alg_num==4){qsort(order+1,NUM_order,sizeof(Order),cmpADV);}
+
+    FILE *fp;
+
+    fp=fopen(filename,"w");
+
+    int work_day;
+    int total_order;
+    if(argc>0 && fp!=NULL)
+    {
+        for(als=1;als<=NUM_ALS;als++)
+        {
+            fprintf(fp, "Assembly Line %d\n",als);
+
+            fprintf(fp,"Algorithm:  %s\n", alg[alg_num]);
+            fprintf(fp,"Start Date: D001\n");
+            fprintf(fp,"End Date:   D060\n");
+
+            fprintf(fp,"  Order Number      Start Date      End Date      Due Date      Quantity Requested      Quantity Produced\n");
+
+
+            int task=0,last=1;
+            work_day = total_order = 0;
+            for(day=1;day<=MAX_DAY;day++){
+                if(ALS[als][day]!=0)
+                {
+                    work_day++;
+                    if(ALS[als][day]!=ALS[als][day-1])total_order++;
+                }
+                if(ALS[als][day]!=task)
+                {
+                    if(task!=0)
+                    {
+                        fprintf(fp,"     R%03d              D%03d            D%03d         D%03d              %-25d%d\n",order[task].oid,last,day-1,order[task].dueDate,order[task].quantity,order[task].quantity);
+                        task=ALS[als][day];
+                        last=day;
+                        continue;}
+                    if(task==0){task=ALS[als][day];last=day;continue;}
+                }
+            }
+
+
+            fprintf(fp,"\n");
+            fprintf(fp,"%-30s: %d days\n","Total number of working days: ", MAX_DAY);
+            fprintf(fp,"%-30s: %d orders\n","Order accepted:",total_order);
+            fprintf(fp,"%-30s: %d days\n","Day not in Use", MAX_DAY-work_day);
+            fprintf(fp,"%-30s: %d days\n","Day in Use", work_day);
+            fprintf(fp,"%-30s: %.1lf%%\n","Utilization", work_day * 100.0 / MAX_DAY);
+
+            fprintf(fp,"\n");
+
+        }
+
+        printf("Result has been written to %s successfully!\n",filename);
+        fclose(fp);
+    }
+
+
+
+    return alg_num;
+}
+
+/* A function to count the orders in each assembly line
+ * Given argument is the status of assemblylines
+ * The result will be store in the array out[3][2];
+ * It can also generate the refuse list
+ */
+void stat(int (*out)[3], int (*stat)[MAX_DAY+5], int *rejectlist, int num_order)
+{
+
+    int als,day,i,j;
+
+    for(i=1;i<=3;i++)
+        for(j=1;j<=2;j++)
+            out[i][j]=0;
+
+    for(i=1;i<=num_order;i++)
+        rejectlist[i]=1;
+
+    for(als=1;als<=NUM_ALS;als++)
+        for(day=1;day<=MAX_DAY;day++)
+        {
+            int oid=stat[als][day];
+            if(oid!=0)
+            {
+                out[als][2]++;
+                if(rejectlist[oid]==1)
+                {
+                    rejectlist[oid]=0;
+                    out[als][1]++;
+                }
+            }
+        }
+}
+
+void printReport(int alg_num,char *filename)
+{
+    FILE *fp;
+
+    fp=fopen(filename,"w");
+
+    if(fp==NULL)
+    {
+        printf("FILE DOES NOT EXIST!\n");
+        return;
+    }
+
+    if(alg_num==0)
+    {
+        fprintf(fp,"No algorithm used. Please use command 'runALS' first.\n");
+        return;
+    }
+
+    /* Part 1
+     *  Summery of Schdules
+     *  Contains number of orders and working days of each assembly line, with in the Utilization.
+     */
+
+    fprintf(fp,"***Summary of Schedules***\n\n");
+
+    fprintf(fp, "Algorithm used: %s\n\n",alg[alg_num]);
+
+    int out[4][3];
+
+    stat(out, ALS, is_reject, NUM_order);
+
+
+    fprintf(fp,"There are %d order seheduled in total.  Details are as follows:\n\n", out[1][1]+out[2][1]+out[3][1]);
+    fprintf(fp,"Assembly Line | Order Accepted | Working Day | Utilization\n");
+    fprintf(fp,"========================================================================\n");
+
+    int als;
+    for(als=1;als<=NUM_ALS;als++)
+        fprintf(fp,"Line_%-11d %-16d %-14d %.1lf\n",als,out[als][1],out[als][2],out[als][2]*100.0/MAX_DAY);
+
+    fprintf(fp,"\n");
+
+    /* Part 2
+     * PERFORMANCE OF ALL ASSEMBLY LINE
+     * Contains Utilization of avrage and total working days.
+     */
+
+    fprintf(fp,"***PERFORMANCE***\n\n");
+
+    int total_day = out[1][2]+out[2][2]+out[3][2],total_order = out[1][1]+out[2][1]+out[3][1];
+    double avg_day = total_day * 1.0 / 3;
+    double util = total_day * 100.0 / (MAX_DAY * 3);
+    fprintf(fp,"%-54s %.1lf DAYS\n", "AVERAGE OF WORKING DAYS FOR THE 3 ASSEMBLY LINES:",avg_day);
+    fprintf(fp,"%-54s %.1lf %%\n", "AVERAGE OF UTILIZATION:",util);
+    fprintf(fp,"\n");
+    fprintf(fp,"%-54s %.1lf DAYS\n", "TOTAL WORKING DAYS OF THE 3 ASSEMBLY LINES:",total_day*1.0);
+    fprintf(fp,"%-54s %.1lf %%\n","UTILIZATION OF THE 3 ASSEMBLY LINES", util);
+    fprintf(fp,"\n");
+
+
+    /* Part 3
+     * Order reject list
+     * output the reject list one by one
+     */
+
+    fprintf(fp,"***Order Rejected List***\n");
+    fprintf(fp,"\n");
+    fprintf(fp,"TOTAL NUMBER OF ORDER RECEIVED:    %d\n",NUM_order);
+    fprintf(fp,"\n");
+    fprintf(fp," - ORDER ACCEPTED:   %d\n",total_order);
+    fprintf(fp," - ORDER REJECTED:   %d\n",NUM_order - total_order);
+    fprintf(fp,"\n");
+    fprintf(fp,"REJECTED ORDER LIST\n");
+    fprintf(fp,"===============================\n");
+
+    int i;
+    int reject_num=0;
+    for(i=1;i<=NUM_order;i++)
+    {
+        if(is_reject[i])
+        {
+            fprintf(fp,"R%04d D%03d D%03d %s %d\n",order[i].oid,order[i].startDate,order[i].dueDate,product[order[i].type].name,order[i].quantity);
+            reject_num++;
+        }
+    }
+
+    fprintf(fp,"\n");
+    fprintf(fp,"There are %d orders rejected.\n",reject_num);
+
+    printf("The report is successfully written to %s.\n",filename);
+
+    fclose(fp);
+
+}
+
+
+
+/* View order list
+ * use of debug
+ */
+void viewOrder()
+{
+    int i;
+    for(i=1;i<=NUM_order;i++)
+        printf("R%04d D%03d D%03d %s %d\n",order[i].oid,order[i].startDate,order[i].dueDate,product[order[i].type].name,order[i].quantity);
+
+}
+
+void viewALS()
+{
+    int i;
+    for(i=1;i<=MAX_DAY;i++)
+        printf("DAY%d %d %d %d\n",i,ALS[1][i],ALS[2][i],ALS[3][i]);
+}
+
+
+int main()
+{
+    init();
+    addProductConfiguration("product_configuration.txt");
+    printf("\t~~WELCOME TO ALS~~\n");
+
+    while(1)
+    {
+        printf("Please enter:\n> ");
+
+        char op[32];
+
+        scanf("%s",op);
+
+        if(strcmp(op, "addOrder") == 0)   // addOrder command
+        {
+            addOrder();
+        }
+
+        else if(strcmp(op, "addBatchOrder") == 0)   // addOrder command
+        {
+            getchar();
+            char filename[64];
+            scanf("%s",filename);
+            printf("%s\n",filename);
+            addBatchOrder(filename);
+        }
+
+        else if(strcmp(op, "runALS") == 0)
+        {
+            char c;
+            c=getchar();
+            int argc=0;
+            char argv[10][32];
+
+            memset(argv,0,sizeof(argv));
+
+            while(argc<10)
+            {
+                if(c<32)break;
+                argc++;
+                int j=0;
+                while(1)
+                {
+                    c=getchar();
+                    if(c>32){argv[argc][j++]=c;continue;}
+                    else {argv[argc][j]=0;break;}
+                }
+            }
+
+
+            int fd[2];
+            int ps=pipe(fd);
+
+            if(ps<0)
+            {
+                printf("Pipe Error!\n");
+                continue;
+            }
+
+            int pid=fork();
+
+            if(pid<0)
+            {
+                printf("Fork error!\n");
+                continue;
+            }
+
+            if(pid == 0)  //child process to ALS
+            {
+                close(fd[0]);
+                int alg_num = runALS(argc, argv[1]);
+                printf("%d\n",pid);
+                printf("%s\n",argv[1]);
+
+                char s[1024]="2335157";   //Store the result into a String
+                int als,day,j=0;
+
+                for(als=1;als<=NUM_ALS;als++)
+                    for(day=1;day<=MAX_DAY;day++)
+                        {
+                            j+=sprintf(s+j,"%d ",ALS[als][day]);
+                        }
+
+
+                j+=sprintf(s+j,"%d ",alg_num);
+
+                write(fd[1],s,sizeof(s));  // Pass it to the fathers
+
+                close(fd[1]);
+
+                exit(0);
+            }
+
+            else
+            {
+                close(fd[1]);
+                wait(NULL);
+
+                alg_used=printSchedule(fd[0],argc,argv[argc]);
+
+
+                close(fd[0]);
+            }
+        }
+
+        else if(strcmp(op, "viewALS") == 0)
+        {
+            viewALS();
+        }
+
+        else if(strcmp(op, "endProgram") == 0)
+        {
+            printf("Bye-bye!\n");
+            break;
+        }
+
+        else if(strcmp(op, "printReport") == 0)   //Command printReport
+        {
+            char filename[64];
+            char trash[8];
+            scanf("%s %s",trash,filename);
+            printReport(alg_used,filename);
+        }
+
+        else if(strcmp(op, "sort") == 0)
+        {
+            qsort(order+1,NUM_order,sizeof(Order),cmpFCFS);
+            viewOrder();
+        }
+
+    }
+
+    return 0;
+}
